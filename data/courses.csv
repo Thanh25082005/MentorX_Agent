@@ -1,0 +1,13 @@
+id,name,category,duration_weeks,price_vnd,schedule,instructor,level,description
+1,Python Cơ Bản,Lập trình,8,3500000,"T2-T4-T6 19h-21h",Nguyễn Văn An,Beginner,"Học lập trình Python từ đầu: biến, hàm, OOP, file I/O"
+2,Python Nâng Cao,Lập trình,10,5500000,"T3-T5 19h-21h30",Nguyễn Văn An,Intermediate,"Decorator, generator, async, design pattern, testing"
+3,Data Science với Python,Data Science,12,8500000,"T3-T5 19h-21h30",Trần Thị Bình,Intermediate,"Pandas, NumPy, Matplotlib, Scikit-learn, EDA"
+4,Machine Learning A-Z,AI/ML,16,12000000,"T7 9h-12h & 14h-17h",Lê Hoàng Cường,Advanced,"Regression, Classification, Clustering, Neural Networks"
+5,Deep Learning & NLP,AI/ML,14,15000000,"CN 9h-12h & 14h-17h",Lê Hoàng Cường,Advanced,"CNN, RNN, Transformer, BERT, GPT fine-tuning"
+6,Web Development Full-stack,Lập trình,12,7500000,"T2-T4-T6 19h-21h",Phạm Minh Đức,Intermediate,"HTML/CSS/JS, React, Node.js, PostgreSQL, Deploy"
+7,SQL & Database,Lập trình,6,2800000,"T7 9h-12h",Trần Thị Bình,Beginner,"SQL cơ bản đến nâng cao, thiết kế database, optimization"
+8,Docker & DevOps,DevOps,8,6000000,"T3-T5 19h-21h",Phạm Minh Đức,Intermediate,"Docker, Docker Compose, CI/CD, Kubernetes cơ bản"
+9,Git & GitHub,Lập trình,4,1500000,"T7 14h-17h",Nguyễn Văn An,Beginner,"Version control, branching, merging, collaboration"
+10,Generative AI & LLM,AI/ML,10,18000000,"T7-CN 9h-12h",Lê Hoàng Cường,Advanced,"Prompt Engineering, RAG, Fine-tuning, LangChain, Agent"
+11,Data Analytics với Excel & Power BI,Data Science,6,3000000,"T2-T4 19h-21h",Trần Thị Bình,Beginner,"Excel nâng cao, Power BI, Dashboard, Storytelling"
+12,Cybersecurity Fundamentals,Bảo mật,8,5000000,"T6 19h-21h & T7 9h-12h",Võ Thanh Hùng,Beginner,"Network security, ethical hacking, vulnerability assessment"
