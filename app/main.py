@@ -35,11 +35,11 @@ async def lifespan(app: FastAPI):
     logger.info("🚀 Starting AI Agent...")
 
     # Khởi tạo RAG pipeline (load hoặc ingest documents)
-    try:
-        orchestrator.initialize_rag()
+    rag_ok = orchestrator.initialize_rag()
+    if rag_ok:
         logger.info("✅ RAG initialized")
-    except Exception as e:
-        logger.warning(f"⚠️ RAG init failed (agent vẫn hoạt động, nhưng RAG sẽ trống): {e}")
+    else:
+        logger.warning("⚠️ RAG init failed (agent vẫn hoạt động, nhưng RAG sẽ trống)")
 
     logger.info("✅ AI Agent ready!")
     logger.info("📚 Tools: " + ", ".join(orchestrator.tools.keys()))
