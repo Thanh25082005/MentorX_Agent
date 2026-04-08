@@ -5,21 +5,19 @@ Pipeline nạp tài liệu vào vector store:
   1. Đọc file .txt / .md / .pdf từ thư mục data/docs/
   2. Chia nhỏ thành chunks (character-based với overlap)
   3. Embed bằng sentence-transformers
-  4. Lưu vào FAISS index
+    4. Upsert vào Qdrant collection
 
 Chạy 1 lần khi khởi tạo hoặc khi có tài liệu mới.
-Dễ thay FAISS → Qdrant / ChromaDB / Pinecone.
+Dễ thay Qdrant → ChromaDB / Pinecone.
 """
 
 from __future__ import annotations
 
-import os
-import pickle
 from pathlib import Path
 
-import faiss
-import numpy as np
 from loguru import logger
+from qdrant_client import QdrantClient
+from qdrant_client.http.models import Distance, PointStruct, VectorParams
 from sentence_transformers import SentenceTransformer
 
 from app.core.config import settings
@@ -27,18 +25,59 @@ from app.models.schemas import DocumentChunk
 
 
 class DocumentIngestor:
-    """Đọc docs → chunk → embed → lưu FAISS."""
+    """Đọc docs → chunk → embed → upsert Qdrant."""
 
     def __init__(
         self,
         embedding_model_name: str | None = None,
         chunk_size: int | None = None,
         chunk_overlap: int | None = None,
+        qdrant_client: QdrantClient | None = None,
     ) -> None:
         self._model_name = embedding_model_name or settings.embedding_model
         self._chunk_size = chunk_size or settings.chunk_size
         self._chunk_overlap = chunk_overlap or settings.chunk_overlap
+        self._collection = settings.qdrant_collection
         self._model: SentenceTransformer | None = None
+        self._external_client = qdrant_client is not None
+        if qdrant_client is not None:
+            self._qdrant = qdrant_client
+            self._using_remote = bool(settings.qdrant_url.strip())
+        else:
+            self._using_remote = bool(settings.qdrant_url.strip())
+            self._qdrant = self._create_qdrant_client()
+
+    def _create_qdrant_client(self) -> QdrantClient:
+        if self._using_remote:
+            return QdrantClient(
+                url=settings.qdrant_url,
+                api_key=settings.qdrant_api_key or None,
+            )
+
+        local_path = Path(settings.qdrant_path)
+        local_path.mkdir(parents=True, exist_ok=True)
+        return QdrantClient(path=str(local_path))
+
+    def _ensure_qdrant_ready(self) -> None:
+        """
+        Kiểm tra kết nối Qdrant.
+        Nếu remote không reachable thì tự động fallback sang embedded local Qdrant.
+        """
+        try:
+            self._qdrant.get_collections()
+        except Exception as e:
+            if self._external_client:
+                raise
+            if self._using_remote:
+                logger.warning(
+                    f"Qdrant remote không kết nối được ({e}). "
+                    f"Fallback sang embedded local tại {settings.qdrant_path}."
+                )
+                self._using_remote = False
+                self._qdrant = self._create_qdrant_client()
+                self._qdrant.get_collections()
+            else:
+                raise
 
     def _get_model(self) -> SentenceTransformer:
         """Lazy-load embedding model."""
@@ -117,23 +156,38 @@ class DocumentIngestor:
 
         return chunks
 
-    # ── Bước 3 & 4: Embed + Index ─────────────────────────
+    # ── Bước 3 & 4: Embed + Upsert Qdrant ────────────────
 
-    def ingest(self, docs_dir: str | None = None) -> tuple[faiss.IndexFlatL2, list[DocumentChunk]]:
+    def _ensure_collection(self, recreate: bool = False) -> None:
+        self._ensure_qdrant_ready()
+        model = self._get_model()
+        dim = model.get_sentence_embedding_dimension()
+
+        exists = self._qdrant.collection_exists(self._collection)
+        if exists and recreate:
+            self._qdrant.delete_collection(self._collection)
+            exists = False
+
+        if not exists:
+            self._qdrant.create_collection(
+                collection_name=self._collection,
+                vectors_config=VectorParams(size=dim, distance=Distance.EUCLID),
+            )
+            logger.info(
+                f"Created Qdrant collection '{self._collection}' (dim={dim}, distance=euclid)"
+            )
+
+    def ingest(self, docs_dir: str | None = None, recreate_collection: bool = True) -> int:
         """
-        Pipeline hoàn chỉnh: load → chunk → embed → FAISS index.
+        Pipeline hoàn chỉnh: load → chunk → embed → Qdrant upsert.
 
         Returns:
-            (faiss_index, list_of_chunks) — chunks giữ song song với index
-            để khi search có thể map vector_id → chunk text.
+            Số lượng chunks đã upsert.
         """
         documents = self._load_documents(docs_dir)
         if not documents:
             logger.warning("No documents to ingest!")
-            # Trả empty index
-            model = self._get_model()
-            dim = model.get_sentence_embedding_dimension()
-            return faiss.IndexFlatL2(dim), []
+            return 0
 
         # Chunk tất cả documents
         all_chunks: list[DocumentChunk] = []
@@ -145,45 +199,35 @@ class DocumentIngestor:
         # Embed
         model = self._get_model()
         texts = [c.text for c in all_chunks]
-        embeddings = model.encode(texts, show_progress_bar=True, convert_to_numpy=True)
-        embeddings = np.array(embeddings, dtype=np.float32)
+        embeddings = model.encode(texts, show_progress_bar=True, normalize_embeddings=False)
 
-        # FAISS index
-        dim = embeddings.shape[1]
-        index = faiss.IndexFlatL2(dim)
-        index.add(embeddings)
-        logger.info(f"FAISS index built: {index.ntotal} vectors, dim={dim}")
+        self._ensure_collection(recreate=recreate_collection)
+        self._ensure_qdrant_ready()
 
-        # Lưu ra đĩa
-        self._save(index, all_chunks)
+        batch_size = 64
+        total = len(all_chunks)
+        for start in range(0, total, batch_size):
+            end = min(start + batch_size, total)
+            points: list[PointStruct] = []
 
-        return index, all_chunks
+            for i in range(start, end):
+                chunk = all_chunks[i]
+                vec = embeddings[i].tolist()
+                points.append(
+                    PointStruct(
+                        id=i,
+                        vector=vec,
+                        payload={
+                            "text": chunk.text,
+                            "source": chunk.source,
+                            "chunk_index": chunk.chunk_index,
+                        },
+                    )
+                )
 
-    def _save(self, index: faiss.IndexFlatL2, chunks: list[DocumentChunk]) -> None:
-        """Persist FAISS index + chunks metadata ra đĩa."""
-        store_dir = Path(settings.faiss_index_path)
-        store_dir.mkdir(parents=True, exist_ok=True)
+            self._qdrant.upsert(collection_name=self._collection, points=points)
 
-        faiss.write_index(index, str(store_dir / "index.faiss"))
-        with open(store_dir / "chunks.pkl", "wb") as f:
-            pickle.dump(chunks, f)
-
-        logger.info(f"Saved FAISS index + chunks to {store_dir}")
-
-    @staticmethod
-    def load_index() -> tuple[faiss.IndexFlatL2 | None, list[DocumentChunk]]:
-        """Load index + chunks từ đĩa (nếu có)."""
-        store_dir = Path(settings.faiss_index_path)
-        index_path = store_dir / "index.faiss"
-        chunks_path = store_dir / "chunks.pkl"
-
-        if not index_path.exists() or not chunks_path.exists():
-            logger.warning("No saved FAISS index found.")
-            return None, []
-
-        index = faiss.read_index(str(index_path))
-        with open(chunks_path, "rb") as f:
-            chunks = pickle.load(f)
-
-        logger.info(f"Loaded FAISS index: {index.ntotal} vectors, {len(chunks)} chunks")
-        return index, chunks
+        logger.info(
+            f"Upserted {total} chunks into Qdrant collection '{self._collection}'"
+        )
+        return total

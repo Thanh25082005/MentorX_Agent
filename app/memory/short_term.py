@@ -66,25 +66,33 @@ class InMemoryBackend(MemoryBackend):
 
 
 # ╔══════════════════════════════════════════════════════════╗
-# ║  Redis Backend (placeholder — uncomment khi cần)         ║
+# ║  Redis Backend                                           ║
 # ╚══════════════════════════════════════════════════════════╝
-#
-# import json, redis
-#
-# class RedisBackend(MemoryBackend):
-#     def __init__(self, url: str = "redis://localhost:6379/0"):
-#         self._r = redis.from_url(url)
-#         self._prefix = "agent:memory:"
-#
-#     def get_messages(self, session_id: str) -> list[MemoryMessage]:
-#         raw = self._r.lrange(f"{self._prefix}{session_id}", 0, -1)
-#         return [MemoryMessage(**json.loads(m)) for m in raw]
-#
-#     def add_message(self, session_id: str, message: MemoryMessage) -> None:
-#         self._r.rpush(f"{self._prefix}{session_id}", message.model_dump_json())
-#
-#     def clear(self, session_id: str) -> None:
-#         self._r.delete(f"{self._prefix}{session_id}")
+
+import json
+import redis
+from pydantic import ValidationError
+
+class RedisBackend(MemoryBackend):
+    def __init__(self, url: str):
+        self._r = redis.from_url(url, decode_responses=True)
+        self._prefix = "agent:memory:"
+
+    def get_messages(self, session_id: str) -> list[MemoryMessage]:
+        raw = self._r.lrange(f"{self._prefix}{session_id}", 0, -1)
+        res = []
+        for m in raw:
+            try:
+                res.append(MemoryMessage(**json.loads(m)))
+            except ValidationError:
+                continue
+        return res
+
+    def add_message(self, session_id: str, message: MemoryMessage) -> None:
+        self._r.rpush(f"{self._prefix}{session_id}", message.model_dump_json())
+
+    def clear(self, session_id: str) -> None:
+        self._r.delete(f"{self._prefix}{session_id}")
 
 
 # ╔══════════════════════════════════════════════════════════╗
@@ -102,7 +110,14 @@ class ShortTermMemory:
         backend: MemoryBackend | None = None,
         max_turns: int | None = None,
     ) -> None:
-        self._backend = backend or InMemoryBackend()
+        if backend is None:
+            if getattr(settings, "redis_url", None):
+                self._backend = RedisBackend(url=settings.redis_url)
+            else:
+                self._backend = InMemoryBackend()
+        else:
+            self._backend = backend
+            
         self._max_turns = max_turns or settings.short_term_max_turns
 
     def get_history(self, session_id: str) -> list[MemoryMessage]:
