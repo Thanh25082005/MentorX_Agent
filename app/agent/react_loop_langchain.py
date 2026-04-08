@@ -1,40 +1,27 @@
 """
-app/agent/react_loop.py
-────────────────────────
-ReAct (Reasoning + Acting) loop.
-
-Vòng lặp gồm 3 pha:
-  1. Thought — Brain suy luận bước tiếp theo cần làm gì
-  2. Action  — Gọi tool phù hợp
-  3. Observation — Nhận kết quả từ tool
-
-Brain tương tác qua structured JSON output (Groq JSON mode).
-Loop dừng khi:
-  • Brain trả final_answer
-  • Đạt max_iterations
-  • Lỗi không phục hồi được
-
-Trace: Mỗi lần chạy tạo ReActTrace object chứa toàn bộ chain-of-thought
-       → hữu ích cho debugging, Langfuse, evaluation.
+app/agent/react_loop_langchain.py
+──────────────────────────────────
+ReAct loop dùng ChatGroq (LangChain) + structured output.
+Giữ nguyên logic/prompt của phiên bản custom.
 """
 
 from __future__ import annotations
 
+from typing import Any
+
+from langchain_core.messages import AIMessage, BaseMessage, HumanMessage, SystemMessage
+from langchain_groq import ChatGroq
 from loguru import logger
 
 from app.core.config import settings
-from app.core.groq_client import groq_client
 from app.models.schemas import (
     Observation,
     ReActStep,
     ReActTrace,
     ReActTraceStep,
-    ToolAction,
 )
 from app.tools.base import BaseTool
 
-
-# ── System prompt cho ReAct ───────────────────────────────
 
 REACT_SYSTEM_PROMPT = """Bạn là trợ lý tư vấn học thuật AI Academy. Bạn đang trong vòng lặp suy luận (ReAct loop).
 
@@ -62,7 +49,11 @@ Nếu đã đủ thông tin để trả lời:
 
 QUY TẮC:
 - Luôn suy nghĩ (thought) trước khi hành động
-- Chọn tool phù hợp nhất
+- Chọn tool phù hợp nhất:
+  + course_search: CHỈ dùng khi cần tra cứu KHÓA HỌC trong hệ thống nội bộ (tên khóa, giá, lịch học)
+  + calculator: tính toán số liệu
+  + web_search: dùng khi cần kiến thức BÊN NGOÀI hệ thống (xu hướng công nghệ, tin tức, giá thị trường, so sánh framework, lộ trình học chung, kiến thức phổ thông mà hệ thống nội bộ KHÔNG CÓ)
+- QUAN TRỌNG: Nếu câu hỏi cần thông tin ngoài dữ liệu khóa học nội bộ, PHẢI dùng web_search TRƯỚC
 - Nếu tool lỗi, thử cách khác hoặc dùng tool khác
 - Trả lời bằng tiếng Việt
 - final_answer phải rõ ràng, đầy đủ, thân thiện
@@ -72,7 +63,6 @@ QUY TẮC:
 
 
 def _build_tool_descriptions(tools: dict[str, BaseTool]) -> str:
-    """Format danh sách tools cho system prompt."""
     lines = []
     for name, tool in tools.items():
         lines.append(f"- **{name}**: {tool.description}")
@@ -80,7 +70,6 @@ def _build_tool_descriptions(tools: dict[str, BaseTool]) -> str:
 
 
 def _build_observation_history(observations: list[Observation]) -> str:
-    """Format lịch sử observations thành text cho prompt."""
     if not observations:
         return ""
     parts = []
@@ -93,104 +82,69 @@ def _build_observation_history(observations: list[Observation]) -> str:
     return "\n\n".join(parts)
 
 
-def _parse_react_step(data: dict) -> ReActStep:
-    """Parse JSON response từ Groq thành ReActStep."""
-    action = None
-    if data.get("action"):
-        action = ToolAction(
-            tool=data["action"].get("tool", ""),
-            input=data["action"].get("input", ""),
-        )
-    return ReActStep(
-        thought=data.get("thought", ""),
-        action=action,
-        final_answer=data.get("final_answer"),
-    )
+def _to_lc_messages(history: list[dict[str, str]] | None) -> list[BaseMessage]:
+    out: list[BaseMessage] = []
+    for msg in (history or []):
+        role = msg.get("role")
+        content = msg.get("content", "")
+        if role == "user":
+            out.append(HumanMessage(content=content))
+        elif role == "assistant":
+            out.append(AIMessage(content=content))
+    return out
 
 
-def run_react_loop(
+def _invoke_react_step(llm: ChatGroq, messages: list[BaseMessage]) -> ReActStep:
+    structured = llm.with_structured_output(ReActStep)
+    result: Any = structured.invoke(messages)
+    if isinstance(result, ReActStep):
+        return result
+    return ReActStep(**result)
+
+
+def run_react_loop_langchain(
     query: str,
     tools: dict[str, BaseTool],
+    llm: ChatGroq,
     chat_history: list[dict[str, str]] | None = None,
     max_iterations: int | None = None,
 ) -> tuple[str, list[str], ReActTrace]:
-    """
-    Chạy ReAct loop.
-
-    Args:
-        query: câu hỏi người dùng
-        tools: dict name→tool đã khởi tạo
-        chat_history: lịch sử hội thoại (optional)
-        max_iterations: giới hạn vòng lặp
-
-    Returns:
-        (final_answer, list_of_tools_used, trace)
-    """
     max_iter = max_iterations or settings.react_max_iterations
     tool_descriptions = _build_tool_descriptions(tools)
     system_prompt = REACT_SYSTEM_PROMPT.format(tool_descriptions=tool_descriptions)
 
     observations: list[Observation] = []
     tools_used: list[str] = []
-
-    # ── Trace object ─────────────────────────────────────
     trace = ReActTrace(query=query)
 
     for iteration in range(1, max_iter + 1):
         logger.info(f"── ReAct iteration {iteration}/{max_iter} ──")
 
-        # ── Build messages cho Groq ──────────────────────
-        messages: list[dict[str, str]] = [
-            {"role": "system", "content": system_prompt}
-        ]
-
-        # Thêm chat history (context)
+        messages: list[BaseMessage] = [SystemMessage(content=system_prompt)]
         if chat_history:
-            # Chỉ lấy vài tin nhắn gần nhất để không vượt context
-            for msg in chat_history[-6:]:
-                messages.append(msg)
+            messages.extend(_to_lc_messages(chat_history[-6:]))
 
-        # User query + observations
         user_content = f"Câu hỏi của người dùng: {query}"
         obs_history = _build_observation_history(observations)
         if obs_history:
             user_content += f"\n\nKết quả các bước trước:\n{obs_history}"
             user_content += "\n\nHãy tiếp tục suy luận và quyết định bước tiếp theo."
 
-        messages.append({"role": "user", "content": user_content})
+        messages.append(HumanMessage(content=user_content))
 
-        # ── Gọi Groq JSON mode ──────────────────────────
         try:
-            data = groq_client.chat_json(messages)
+            step = _invoke_react_step(llm, messages)
         except Exception as e:
-            logger.error(f"ReAct: Groq error at iteration {iteration}: {e}")
-            trace.final_answer = (
-                "Xin lỗi, tôi gặp lỗi khi xử lý. Vui lòng thử lại sau."
-            )
+            logger.error(f"ReAct: LLM error at iteration {iteration}: {e}")
+            trace.final_answer = "Xin lỗi, tôi gặp lỗi khi xử lý. Vui lòng thử lại sau."
             trace.total_iterations = iteration
             trace.tools_called = tools_used
             return trace.final_answer, tools_used, trace
 
-        if "error" in data:
-            logger.error(f"ReAct: JSON parse error: {data}")
-            trace.final_answer = (
-                "Xin lỗi, tôi gặp lỗi khi phân tích. Vui lòng thử lại."
-            )
-            trace.total_iterations = iteration
-            trace.tools_called = tools_used
-            return trace.final_answer, tools_used, trace
-
-        # ── Parse step ───────────────────────────────────
-        step = _parse_react_step(data)
         logger.info(f"  Thought: {step.thought[:100]}")
 
-        # Tạo trace step
-        trace_step = ReActTraceStep(
-            iteration=iteration,
-            thought=step.thought,
-        )
+        trace_step = ReActTraceStep(iteration=iteration, thought=step.thought)
 
-        # ── Check final answer ───────────────────────────
         if step.final_answer:
             logger.info(f"  → Final answer (len={len(step.final_answer)})")
             trace_step.observation = "[Final answer reached]"
@@ -200,12 +154,15 @@ def run_react_loop(
             trace.tools_called = tools_used
             return step.final_answer, tools_used, trace
 
-        # ── Execute action ───────────────────────────────
         if step.action is None:
             logger.warning("  → No action and no final_answer, forcing finish")
             trace.steps.append(trace_step)
-            final = _force_final_answer(
-                query, observations, system_prompt, chat_history
+            final = _force_final_answer_langchain(
+                llm=llm,
+                query=query,
+                observations=observations,
+                system_prompt=system_prompt,
+                chat_history=chat_history,
             )
             trace.final_answer = final
             trace.total_iterations = iteration
@@ -220,7 +177,6 @@ def run_react_loop(
         trace_step.action_input = tool_input
 
         if tool_name not in tools:
-            logger.warning(f"  → Unknown tool: {tool_name}")
             obs_output = (
                 f"Tool '{tool_name}' không tồn tại. "
                 f"Các tool có sẵn: {', '.join(tools.keys())}"
@@ -239,9 +195,7 @@ def run_react_loop(
             trace.steps.append(trace_step)
             continue
 
-        # Gọi tool qua safe_execute
-        tool = tools[tool_name]
-        output, success = tool.safe_execute(tool_input)
+        output, success = tools[tool_name].safe_execute(tool_input)
         tools_used.append(tool_name)
 
         observations.append(
@@ -258,48 +212,46 @@ def run_react_loop(
         trace_step.observation_success = success
         trace.steps.append(trace_step)
 
-        logger.info(f"  Observation: success={success}, len={len(output)}")
-
-    # ── Hết max iterations → force tổng hợp ─────────────
     logger.warning(f"ReAct: Max iterations ({max_iter}) reached, forcing answer")
-    final = _force_final_answer(query, observations, system_prompt, chat_history)
+    final = _force_final_answer_langchain(
+        llm=llm,
+        query=query,
+        observations=observations,
+        system_prompt=system_prompt,
+        chat_history=chat_history,
+    )
     trace.final_answer = final
     trace.total_iterations = max_iter
     trace.tools_called = tools_used
     return final, tools_used, trace
 
 
-def _force_final_answer(
+def _force_final_answer_langchain(
+    llm: ChatGroq,
     query: str,
     observations: list[Observation],
     system_prompt: str,
     chat_history: list[dict[str, str]] | None,
 ) -> str:
-    """Khi hết iterations, gọi Groq 1 lần cuối để tổng hợp câu trả lời."""
-    messages: list[dict[str, str]] = [
-        {"role": "system", "content": system_prompt}
-    ]
+    messages: list[BaseMessage] = [SystemMessage(content=system_prompt)]
     if chat_history:
-        for msg in chat_history[-4:]:
-            messages.append(msg)
+        messages.extend(_to_lc_messages(chat_history[-4:]))
 
     obs_text = _build_observation_history(observations)
-    messages.append({
-        "role": "user",
-        "content": (
-            f"Câu hỏi: {query}\n\n"
-            f"Kết quả thu thập:\n{obs_text}\n\n"
-            f"Hãy tổng hợp và đưa ra câu trả lời cuối cùng. "
-            f"Trả JSON với final_answer."
-        ),
-    })
+    messages.append(
+        HumanMessage(
+            content=(
+                f"Câu hỏi: {query}\n\n"
+                f"Kết quả thu thập:\n{obs_text}\n\n"
+                f"Hãy tổng hợp và đưa ra câu trả lời cuối cùng. "
+                f"Trả JSON với final_answer."
+            )
+        )
+    )
 
     try:
-        data = groq_client.chat_json(messages)
-        return data.get(
-            "final_answer",
-            "Xin lỗi, tôi không thể tổng hợp câu trả lời.",
-        )
+        step = _invoke_react_step(llm, messages)
+        return step.final_answer or "Xin lỗi, tôi không thể tổng hợp câu trả lời."
     except Exception as e:
         logger.error(f"Force final answer failed: {e}")
         return "Xin lỗi, tôi gặp lỗi khi tổng hợp câu trả lời."

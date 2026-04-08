@@ -33,6 +33,9 @@ class ChatResponse(BaseModel):
     """Response trả về cho client."""
     session_id: str
     answer: str
+    brain_reasoning: str = Field(
+        default="", description="Lý do Brain chọn intent (quy trình tư duy cấp cao)"
+    )
     intent: str = Field(default="unknown", description="Intent Brain phân loại được")
     tools_used: list[str] = Field(default_factory=list)
     rag_used: bool = False

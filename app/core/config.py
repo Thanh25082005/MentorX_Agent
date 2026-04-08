@@ -29,17 +29,25 @@ class Settings(BaseSettings):
     embedding_model: str = "all-MiniLM-L6-v2"
 
     # ── RAG / FAISS ───────────────────────────────────────
+    rag_backend: str = "qdrant"  # qdrant | faiss
     faiss_index_path: str = str(BASE_DIR / "data" / "vector_store")
     chunk_size: int = 500
     chunk_overlap: int = 50
     rag_top_k: int = 3
     rag_distance_threshold: float = 1.5  # bỏ chunks có distance > threshold
 
+    # ── Qdrant ─────────────────────────────────────────────
+    qdrant_url: str = "http://localhost:6333"
+    qdrant_api_key: str = ""
+    qdrant_collection: str = "academy_docs"
+    qdrant_path: str = str(BASE_DIR / "data" / "qdrant")
+
     # ── Memory ────────────────────────────────────────────
     short_term_max_turns: int = 20
+    redis_url: str | None = None
 
     # ── Agent ─────────────────────────────────────────────
-    react_max_iterations: int = 5
+    react_max_iterations: int = 10
     debug_mode: bool = False        # trả ReAct trace trong response
 
     # ── Data paths ────────────────────────────────────────
