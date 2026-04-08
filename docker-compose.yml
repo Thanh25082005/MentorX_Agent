@@ -1,0 +1,59 @@
+version: '3.8'
+
+services:
+  qdrant:
+    image: qdrant/qdrant:latest
+    container_name: edubot-qdrant
+    ports:
+      - "6333:6333"
+    volumes:
+      - qdrant_data:/qdrant/storage
+    restart: unless-stopped
+
+  redis:
+    image: redis:alpine
+    container_name: edubot-redis
+    ports:
+      - "6380:6379"
+    volumes:
+      - redis_data:/data
+    restart: unless-stopped
+
+  backend:
+    build:
+      context: .
+      dockerfile: backend.Dockerfile
+    container_name: edubot-backend
+    ports:
+      - "8000:8000"
+    environment:
+      - GROQ_API_KEY=${GROQ_API_KEY}
+      - GROQ_MODEL=llama-3.3-70b-versatile
+      - RAG_BACKEND=qdrant
+      - QDRANT_URL=http://qdrant:6333
+      - QDRANT_COLLECTION=academy_docs
+      - REDIS_URL=redis://redis:6379/0
+      - REACT_MAX_ITERATIONS=10
+    volumes:
+      - ./data:/app/data
+    depends_on:
+      - qdrant
+      - redis
+    restart: unless-stopped
+
+  frontend:
+    build:
+      context: frontend/
+      dockerfile: frontend.Dockerfile
+    container_name: edubot-frontend
+    ports:
+      - "3000:3000"
+    environment:
+      - NEXT_PUBLIC_AGENT_API_URL=http://localhost:8000
+    depends_on:
+      - backend
+    restart: unless-stopped
+
+volumes:
+  qdrant_data:
+  redis_data:
