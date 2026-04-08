@@ -1,196 +1,370 @@
-# AI Academic Advisor Agent
+# 🤖 MentorX Agent — AI Academy Chatbot
 
-An AI Agent for academic/training support built with **Groq**, **LangChain**, **RAG**, **ReAct-style reasoning**, and **FastAPI**.
-
-This project started as a custom Python implementation and is being **refactored toward LangChain-based orchestration** to make the codebase cleaner, easier to extend, and easier to maintain.
+> Hệ thống AI Agent tư vấn học thuật thông minh, được xây dựng trên kiến trúc **LangGraph + ReAct Reasoning + RAG**, có khả năng tra cứu khóa học, tính toán học phí, tìm kiếm Internet và ghi nhớ ngữ cảnh hội thoại.
 
 ---
 
-## Overview
+## 📑 Mục lục
 
-This system is an **Autonomous AI Agent Architecture** for handling user questions related to academic/training information. It combines:
-
-- a central **LLM Brain** powered by **Groq**
-- **short-term memory** for recent conversation context
-- **long-term memory** through **RAG**
-- a **ReAct-style loop** for reasoning and action
-- a **tool layer** for structured lookup, calculation, and web search
-
-The main idea is simple:
-
-- simple questions can be answered directly
-- internal knowledge questions go through **RAG**
-- action-oriented or multi-step questions go through the **ReAct loop** and may call tools
-
-This matches the architecture where the Brain coordinates memory, retrieval, and tools rather than doing everything from raw prompting alone.
+- [Tổng quan](#-tổng-quan)
+- [Kiến trúc hệ thống](#-kiến-trúc-hệ-thống)
+- [Pipeline xử lý](#-pipeline-xử-lý-chi-tiết)
+- [Cấu trúc thư mục](#-cấu-trúc-thư-mục)
+- [Cài đặt & Chạy](#-cài-đặt--chạy)
+- [Biến môi trường](#-biến-môi-trường)
+- [API Endpoints](#-api-endpoints)
+- [Kịch bản Test](#-kịch-bản-test)
+- [Công nghệ sử dụng](#-công-nghệ-sử-dụng)
 
 ---
 
-## Main Goals
+## 🎯 Tổng quan
 
-- Answer natural language questions accurately
-- Keep recent conversation context
-- Retrieve knowledge from internal documents
-- Use tools when needed
-- Support modular migration from custom logic to **LangChain**
-- Stay easy to run locally while remaining production-friendly
+MentorX Agent là một AI Chatbot chuyên tư vấn khóa học cho AI Academy, được thiết kế theo kiến trúc **Agentic AI** hiện đại với các khả năng:
 
----
-
-## Architecture
-
-### Core Components
-
-#### 1. LLM Brain
-The Brain is the central decision-maker of the system.
-
-Responsibilities:
-- understand user intent
-- decide whether to answer directly, use RAG, or call tools
-- run reasoning steps
-- synthesize the final response
-
-**LLM provider:** Groq
-
-Groq is used here as the main inference layer because the architecture relies on multiple reasoning/action steps, and low latency is especially valuable for ReAct-style execution. :contentReference[oaicite:2]{index=2}
+| Tính năng | Mô tả |
+|-----------|-------|
+| 🧠 **Intent Classification** | Tự động phân loại câu hỏi vào 3 luồng xử lý |
+| 🔧 **Tool Calling (ReAct)** | Gọi công cụ tự động: tìm khóa học, tính toán, tìm web |
+| 📚 **RAG** | Truy vấn tài liệu nội bộ (syllabus, chính sách) bằng Vector Search |
+| 🌐 **Web Search** | Tìm kiếm kiến thức từ Internet (DuckDuckGo) |
+| 💬 **Conversation Memory** | Ghi nhớ ngữ cảnh hội thoại qua nhiều lượt |
+| 📊 **Markdown Rendering** | Format bảng, list, heading, emoji trên giao diện |
+| 🔍 **Planning Trace** | Hiển thị quá trình suy luận của Agent trên UI |
 
 ---
 
-#### 2. Short-Term Memory
-Short-term memory stores recent chat history so the agent can keep context across turns.
+## 🏗 Kiến trúc hệ thống
 
-Typical use cases:
-- resolving pronouns like “that course”
-- remembering the previous question
-- keeping the conversation coherent
-
-Recommended implementation:
-- MVP: in-memory buffer
-- production-ready path: Redis-based memory
-
-The architecture document also highlights short-term memory as session-oriented, fast, and suitable for sliding-window storage. :contentReference[oaicite:3]{index=3}
-
----
-
-#### 3. Long-Term Memory (RAG)
-Long-term memory is implemented through a Retrieval-Augmented Generation pipeline.
-
-It typically includes:
-- **Document Store** for source files
-- **Embedding Model**
-- **Vector Database** for semantic search
-
-Typical knowledge sources:
-- syllabus
-- policies
-- wiki pages
-- internal documents
-
-RAG is used when the answer should come from trusted internal knowledge rather than the model’s parametric memory. :contentReference[oaicite:4]{index=4}
-
----
-
-#### 4. ReAct Reasoning Loop
-The system uses a ReAct-style loop:
-
-- **Thought**: reason about what to do next
-- **Action**: call a tool or retrieval step
-- **Observation**: read the result
-- repeat if needed
-- generate final answer
-
-This loop is especially useful for multi-step tasks such as:
-- looking up course information
-- combining retrieved knowledge with calculations
-- deciding whether another tool call is needed
-
----
-
-#### 5. Tool Layer
-The agent can interact with external capabilities through tools.
-
-Current tool set:
-- **Local Search** on `courses.csv`
-- **Calculator**
-- **Web Search**
-
-This allows the system to go beyond pure text generation and operate on structured data or external information. :contentReference[oaicite:5]{index=5}
+```
+┌─────────────────────────────────────────────────────────┐
+│                    Frontend (Next.js)                    │
+│              http://localhost:3000                       │
+│  ┌─────────┐  ┌──────────┐  ┌────────────────────────┐  │
+│  │ Chat UI │  │ Markdown │  │ Planning Trace Viewer  │  │
+│  │         │  │ Renderer │  │ (Collapsible)          │  │
+│  └────┬────┘  └──────────┘  └────────────────────────┘  │
+│       │ SSE Stream (Server-Sent Events)                  │
+└───────┼─────────────────────────────────────────────────┘
+        │
+        ▼
+┌─────────────────────────────────────────────────────────┐
+│                 Backend (FastAPI)                        │
+│              http://localhost:8000                       │
+│                                                         │
+│  ┌──────────────────────────────────────────────────┐   │
+│  │              Orchestrator (LangGraph)             │   │
+│  │                                                    │   │
+│  │  ┌─────────────┐    ┌────────────────────────┐    │   │
+│  │  │  Classify    │───▶│  Router (Conditional   │    │   │
+│  │  │  Intent      │    │  Edges)                │    │   │
+│  │  └─────────────┘    └───────┬────────────────┘    │   │
+│  │                      ┌──────┼──────┐              │   │
+│  │                      ▼      ▼      ▼              │   │
+│  │               ┌──────┐ ┌────┐ ┌────────┐          │   │
+│  │               │DIRECT│ │RAG │ │ ReAct  │          │   │
+│  │               │Answer│ │    │ │ Loop   │          │   │
+│  │               └──┬───┘ └─┬──┘ └───┬────┘          │   │
+│  │                  │       │        │               │   │
+│  │                  ▼       ▼        ▼               │   │
+│  │            ┌──────────────────────────┐           │   │
+│  │            │    Memory Update Node    │           │   │
+│  │            └──────────────────────────┘           │   │
+│  └──────────────────────────────────────────────────┘   │
+│                                                         │
+│  ┌──────────┐  ┌──────────┐  ┌──────────────────────┐   │
+│  │ Qdrant   │  │  Groq    │  │   Tools              │   │
+│  │ (Vector  │  │  LLM     │  │  ├─ course_search    │   │
+│  │  Store)  │  │  API     │  │  ├─ calculator        │   │
+│  └──────────┘  └──────────┘  │  └─ web_search        │   │
+│                              └──────────────────────┘   │
+└─────────────────────────────────────────────────────────┘
+```
 
 ---
 
-## High-Level Flow
+## ⚙ Pipeline xử lý chi tiết
 
-1. User sends a query
-2. The Brain loads recent chat history from short-term memory
-3. The Brain analyzes the intent
-4. The system chooses one of these paths:
-   - direct answer
-   - RAG retrieval
-   - ReAct loop with tool usage
-5. Retrieved context / tool results are returned to the Brain
-6. The Brain composes the final answer
-7. The conversation is stored back into short-term memory
-8. The API returns the response to the user
+### Bước 1: User gửi tin nhắn
+```
+User → Frontend (Next.js) → POST /api/chat/stream → Backend (FastAPI)
+```
+Frontend gửi request SSE (Server-Sent Events) để nhận phản hồi dạng stream theo thời gian thực.
 
-This flow reflects the architecture where the Brain coordinates memory, retrieval, and tool observations end to end. :contentReference[oaicite:6]{index=6}
+### Bước 2: Orchestrator nhận request
+```python
+orchestrator.handle_message(session_id, message, debug=True)
+```
+Orchestrator là trung tâm điều phối, được xây dựng bằng **LangGraph StateGraph** với các node:
+
+### Bước 3: Classify Intent (Phân loại ý định)
+LLM (Groq) phân tích câu hỏi và phân loại vào 1 trong 3 luồng:
+
+| Intent | Khi nào | Ví dụ |
+|--------|---------|-------|
+| `DIRECT_ANSWER` | Chào hỏi, câu đơn giản | "Xin chào", "Cảm ơn" |
+| `USE_RAG` | Hỏi về chính sách, lộ trình, tài liệu nội bộ | "Lộ trình học AI Academy?" |
+| `USE_TOOLS` | Cần tra cứu, tính toán, tìm web | "Tìm khóa Python", "Giá Bitcoin?" |
+
+### Bước 4a: Luồng DIRECT_ANSWER
+```
+classify_intent → direct → memory_update → END
+```
+- LLM trả lời trực tiếp không cần tra cứu
+- Nhanh nhất (~1-2 giây)
+
+### Bước 4b: Luồng USE_RAG
+```
+classify_intent → rag → memory_update → END
+```
+1. Tạo embedding từ câu hỏi (all-MiniLM-L6-v2)
+2. Truy vấn Qdrant Vector Store tìm tài liệu tương đồng
+3. Inject context vào prompt, LLM tổng hợp câu trả lời
+
+### Bước 4c: Luồng USE_TOOLS (ReAct Loop)
+```
+classify_intent → react → memory_update → END
+```
+Agent chạy vòng lặp **ReAct** (Reasoning + Acting) tối đa 10 vòng:
+
+```
+┌─────────────────────────────────────────┐
+│            ReAct Loop                   │
+│                                         │
+│  Thought → Action → Observation ──┐     │
+│      ▲                            │     │
+│      └────────────────────────────┘     │
+│                                         │
+│  Khi đủ thông tin → Final Answer        │
+└─────────────────────────────────────────┘
+```
+
+**Các Tool có sẵn:**
+
+| Tool | Chức năng | Input |
+|------|-----------|-------|
+| `course_search` | Tìm khóa học từ `courses.csv` | Keyword (tên, level, giảng viên) |
+| `calculator` | Tính toán biểu thức toán học | Biểu thức (VD: `5000000 * 3`) |
+| `web_search` | Tìm kiếm Internet (DuckDuckGo) | Query tìm kiếm |
+
+### Bước 5: Memory Update
+- LangGraph Checkpointer lưu trạng thái hội thoại theo `thread_id`
+- Cho phép Agent nhớ ngữ cảnh qua nhiều lượt chat
+
+### Bước 6: Stream Response
+Backend gửi phản hồi về Frontend qua SSE với các event:
+
+```
+status: loading → thinking → streaming
+metadata: {intent, tools_used, rag_used, trace}
+token: {delta: "từng"} → {delta: "từ"} → {delta: "một"}
+final: {answer: "câu trả lời hoàn chỉnh"}
+done
+```
+
+### Bước 7: Frontend Render
+- **ReactMarkdown** render Markdown (bảng, list, heading, code, link)
+- **Planning Trace Viewer** hiển thị quá trình suy luận (collapsible)
+- **Metadata Badges** hiển thị intent, tools, RAG status
 
 ---
 
-## Tech Stack
+## 📁 Cấu trúc thư mục
 
-### Current / Target Stack
-
-- **Python**
-- **FastAPI**
-- **Groq API**
-- **LangChain**
-- **FAISS** or **ChromaDB**
-- **pandas**
-- **Pydantic**
-- **python-dotenv**
-
-### Suggested future production upgrades
-
-- **Redis** for short-term memory and caching
-- **PostgreSQL** for structured course data and workflow/checkpoint state
-- **Qdrant** for production vector search
-- **Tavily** for web search
-- **LangGraph** for explicit graph-based agent orchestration
-- **Langfuse** for tracing and observability
-- **Llama-Guard / guardrails** for safer inputs and outputs
-
-The architecture notes also recommend guardrails, caching, observability, and more production-grade storage layers as the next step beyond the MVP. :contentReference[oaicite:7]{index=7} :contentReference[oaicite:8]{index=8}
+```
+Demo_AIagent/
+├── app/                          # Backend Python
+│   ├── main.py                   # FastAPI entry point + lifespan
+│   ├── api/
+│   │   └── routes.py             # API endpoints (chat, stream, health)
+│   ├── agent/
+│   │   ├── orchestrator.py       # LangGraph Orchestrator (trung tâm điều phối)
+│   │   ├── react_loop.py         # ReAct loop (raw Groq SDK)
+│   │   └── react_loop_langchain.py # ReAct loop (LangChain structured output)
+│   ├── core/
+│   │   ├── config.py             # Pydantic Settings (đọc .env)
+│   │   └── groq_client.py        # Groq API client wrapper
+│   ├── memory/
+│   │   └── short_term.py         # Session memory (InMemory / Redis backend)
+│   ├── models/
+│   │   └── schemas.py            # Pydantic models (Request/Response/Trace)
+│   ├── rag/
+│   │   └── retriever.py          # RAG retriever (Qdrant + Sentence Transformers)
+│   └── tools/
+│       ├── base.py               # BaseTool abstract class
+│       ├── calculator.py         # Calculator tool
+│       ├── course_search.py      # Course search tool (pandas + CSV)
+│       └── web_search.py         # Web search tool (DuckDuckGo)
+│
+├── frontend/                     # Frontend Next.js
+│   ├── app/                      # Next.js App Router
+│   ├── components/
+│   │   └── chat/
+│   │       ├── chat-message.tsx  # Message bubble + Markdown + Planning Trace
+│   │       └── ...               # Other chat components
+│   ├── hooks/
+│   │   └── use-agent-chat.ts     # Chat state management + SSE streaming
+│   ├── lib/
+│   │   └── api/
+│   │       └── agent-client.ts   # Backend API client
+│   └── types/
+│       └── chat.ts               # TypeScript types
+│
+├── data/
+│   ├── courses.csv               # Dữ liệu khóa học
+│   └── docs/                     # Tài liệu RAG (syllabus.md, ...)
+│
+├── .env.example                  # Template biến môi trường
+├── .gitignore                    # Git ignore rules
+├── requirements.txt              # Python dependencies
+├── backend.Dockerfile            # Docker image cho Backend
+├── frontend/frontend.Dockerfile  # Docker image cho Frontend
+└── docker-compose.yml            # Docker Compose (Qdrant + Redis + Backend + Frontend)
+```
 
 ---
 
-## Project Structure
+## 🚀 Cài đặt & Chạy
 
-```text
-app/
-├── api/
-│   └── routes.py
-├── agent/
-│   ├── orchestrator.py
-│   └── react_loop.py
-├── core/
-│   ├── config.py
-│   └── groq_client.py
-├── memory/
-│   └── short_term.py
-├── models/
-│   └── schemas.py
-├── rag/
-│   ├── ingest.py
-│   └── retriever.py
-├── tools/
-│   ├── base.py
-│   ├── calculator.py
-│   ├── course_search.py
-│   └── web_search.py
-└── main.py
+### Yêu cầu hệ thống
+- Python 3.12+
+- Node.js 20+
+- pnpm (hoặc npm/yarn)
 
-data/
-├── courses.csv
-└── docs/
+### 1. Clone & cài đặt Backend
 
-tests/
+```bash
+# Clone
+git clone <repo-url>
+cd Demo_AIagent
+
+# Tạo virtual environment
+python -m venv venv
+source venv/bin/activate  # Linux/Mac
+# venv\Scripts\activate   # Windows
+
+# Cài đặt dependencies
+pip install -r requirements.txt
+```
+
+### 2. Cấu hình biến môi trường
+
+```bash
+cp .env.example .env
+# Mở .env và điền GROQ_API_KEY
+```
+
+### 3. Cài đặt Frontend
+
+```bash
+cd frontend
+pnpm install    # hoặc: npm install
+cd ..
+```
+
+### 4. Chạy project
+
+**Terminal 1 — Backend:**
+```bash
+source venv/bin/activate
+uvicorn app.main:app --host 0.0.0.0 --port 8000 --reload
+```
+
+**Terminal 2 — Frontend:**
+```bash
+cd frontend
+pnpm dev    # hoặc: npm run dev
+```
+
+### 5. Truy cập
+
+| Service | URL |
+|---------|-----|
+| 🌐 Web UI | http://localhost:3000 |
+| 📡 API Backend | http://localhost:8000 |
+| 📖 API Docs (Swagger) | http://localhost:8000/docs |
+
+---
+
+## 🔑 Biến môi trường
+
+| Biến | Bắt buộc | Mô tả | Giá trị mặc định |
+|------|----------|-------|-------------------|
+| `GROQ_API_KEY` | ✅ | API key từ [Groq Console](https://console.groq.com/keys) | — |
+| `GROQ_MODEL` | ❌ | Model LLM | `llama-3.3-70b-versatile` |
+| `RAG_BACKEND` | ❌ | Backend cho RAG | `qdrant` |
+| `QDRANT_URL` | ❌ | URL Qdrant server | `http://localhost:6333` |
+| `QDRANT_COLLECTION` | ❌ | Tên collection | `academy_docs` |
+| `REACT_MAX_ITERATIONS` | ❌ | Số vòng ReAct tối đa | `10` |
+| `REDIS_URL` | ❌ | Redis URL (cho Docker mode) | `redis://localhost:6379` |
+
+---
+
+## 📡 API Endpoints
+
+| Method | Endpoint | Mô tả |
+|--------|----------|-------|
+| `POST` | `/api/chat` | Gửi tin nhắn, nhận response (sync) |
+| `POST` | `/api/chat/stream` | Gửi tin nhắn, nhận SSE stream |
+| `GET` | `/api/chat/suggestions` | Gợi ý câu hỏi từ courses.csv |
+| `POST` | `/api/chat/clear` | Xóa lịch sử session |
+| `GET` | `/api/health` | Health check |
+| `GET` | `/api/tools` | Danh sách tools có sẵn |
+| `GET` | `/api/sessions/{id}/history` | Xem lịch sử chat |
+| `POST` | `/api/rag/reingest` | Nạp lại tài liệu RAG |
+
+---
+
+## 🧪 Kịch bản Test
+
+Gửi lần lượt các câu sau vào chatbot để test toàn bộ pipeline:
+
+| # | Câu test | Tính năng kiểm tra | Kỳ vọng |
+|---|----------|--------------------|---------|
+| 1 | "Chào bạn, bạn tên gì?" | Direct Answer | Bot chào lại, trace 1 bước |
+| 2 | "Lộ trình học tại AI Academy?" | RAG | Badge RAG, trace 2 bước |
+| 3 | "Tìm các khóa học Python" | Tool: course_search | Badge course_search, liệt kê khóa học |
+| 4 | "Tổng học phí 3 khóa Python?" | Tool: calculator + Memory | Badge calculator, nhớ ngữ cảnh |
+| 5 | "Xu hướng AI hot nhất 2025?" | Tool: web_search | Badge web_search, có thông tin từ internet |
+| 6 | "So sánh Python cơ bản vs nâng cao (dạng bảng)" | Markdown Table | Bảng render đẹp trên UI |
+| 7 | "Khóa Python đầu tiên có gì trong chương trình?" | Conversation Memory | Bot nhớ ngữ cảnh câu trước |
+
+---
+
+## 🛠 Công nghệ sử dụng
+
+### Backend
+| Công nghệ | Vai trò |
+|------------|---------|
+| **FastAPI** | Web framework (async, SSE) |
+| **LangChain** | LLM abstraction layer |
+| **LangGraph** | Agentic workflow orchestration |
+| **Groq** | LLM API (Llama 3.3 70B) |
+| **Qdrant** | Vector database cho RAG |
+| **Sentence Transformers** | Embedding model (all-MiniLM-L6-v2) |
+| **DuckDuckGo Search** | Web search API (miễn phí) |
+| **Pydantic** | Data validation & settings |
+| **Loguru** | Structured logging |
+
+### Frontend
+| Công nghệ | Vai trò |
+|------------|---------|
+| **Next.js 16** | React framework (App Router) |
+| **TypeScript** | Type safety |
+| **Tailwind CSS** | Utility-first CSS |
+| **shadcn/ui** | UI component library |
+| **ReactMarkdown** | Markdown rendering |
+| **remark-gfm** | GitHub Flavored Markdown (tables) |
+
+### DevOps (Optional)
+| Công nghệ | Vai trò |
+|------------|---------|
+| **Docker** | Containerization |
+| **Docker Compose** | Multi-service orchestration |
+| **Redis** | Session memory persistence |
+
+---
+
+## 📝 License
+
+MIT License — Tự do sử dụng cho mục đích học tập và phát triển.

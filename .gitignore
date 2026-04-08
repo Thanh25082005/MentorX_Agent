@@ -40,6 +40,7 @@ yarn-error.log*
 .env
 .env.local
 .env.*.local
+!.env.example
 
 # ========================
 # IDE / Editor
@@ -56,8 +57,15 @@ Thumbs.db
 # Data / Vector Store
 # ========================
 data/vector_store/
+data/qdrant/
 
 # ========================
-# OS
+# Docker
+# ========================
+*.dockerignore
+
+# ========================
+# OS / Misc
 # ========================
 *.log
+*.tmp
